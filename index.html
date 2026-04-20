@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LP Tracker Pro — DeFi Analytics</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<!-- ══ PANTALLA DE CARGA INICIAL ════════════════════════════════ -->
+<div id="loadingScreen" class="loading-screen">
+  <div class="ls-inner">
+    <span class="ls-icon">◈</span>
+    <div class="ls-spinner"></div>
+  </div>
+</div>
+
+<!-- ══ PANTALLA DE AUTENTICACIÓN ════════════════════════════════ -->
+<div id="authScreen" class="auth-screen hidden">
+
+  <div class="auth-brand">
+    <span class="auth-brand-icon">◈</span>
+    <div>
+      <h1 class="auth-brand-name">LP Tracker Pro</h1>
+      <p class="auth-brand-sub">DeFi Analytics · Gestión de Liquidity Pools</p>
+    </div>
+  </div>
+
+  <div class="auth-card">
+    <div class="auth-tabs">
+      <button id="tabLogin"    class="auth-tab auth-tab--active">Iniciar sesión</button>
+      <button id="tabRegister" class="auth-tab">Crear cuenta</button>
+    </div>
+
+    <div id="authAlert" class="auth-alert hidden"></div>
+
+    <!-- Login -->
+    <form id="loginForm" class="auth-form">
+      <div class="form-group">
+        <label class="label" for="loginEmail">Email</label>
+        <input class="input" type="email" id="loginEmail"
+               placeholder="tu@email.com" required autocomplete="email" />
+      </div>
+      <div class="form-group">
+        <label class="label" for="loginPassword">Contraseña</label>
+        <input class="input" type="password" id="loginPassword"
+               placeholder="••••••••" required autocomplete="current-password" />
+      </div>
+      <button type="submit" id="loginBtn" class="btn btn-primary btn-full btn-lg">
+        <span class="btn-text">Iniciar sesión</span>
+        <span class="btn-spin hidden"></span>
+      </button>
+    </form>
+
+    <!-- Registro -->
+    <form id="registerForm" class="auth-form hidden">
+      <div class="form-group">
+        <label class="label" for="regEmail">Email</label>
+        <input class="input" type="email" id="regEmail"
+               placeholder="tu@email.com" required autocomplete="email" />
+      </div>
+      <div class="form-group">
+        <label class="label" for="regPassword">Contraseña</label>
+        <input class="input" type="password" id="regPassword"
+               placeholder="Mínimo 6 caracteres" required autocomplete="new-password" />
+      </div>
+      <div class="form-group">
+        <label class="label" for="regConfirm">Confirmar contraseña</label>
+        <input class="input" type="password" id="regConfirm"
+               placeholder="Repite la contraseña" required autocomplete="new-password" />
+      </div>
+      <button type="submit" id="registerBtn" class="btn btn-primary btn-full btn-lg">
+        <span class="btn-text">Crear cuenta gratis</span>
+        <span class="btn-spin hidden"></span>
+      </button>
+    </form>
+  </div>
+
+  <p class="auth-footnote">Datos cifrados en Supabase · Sin tarjeta de crédito requerida</p>
+</div>
+
+<!-- ══ APP SHELL ════════════════════════════════════════════════ -->
+<div id="appScreen" class="app-screen hidden">
+
+  <!-- ─── SIDEBAR ──────────────────────────────────────────────── -->
+  <aside class="sidebar">
+    <div class="sidebar-inner">
+
+      <!-- Marca -->
+      <div class="sidebar-brand">
+        <span class="sb-icon">◈</span>
+        <div>
+          <div class="sb-name">LP Tracker Pro</div>
+          <div class="sb-sub">DeFi Analytics</div>
+        </div>
+      </div>
+
+      <!-- Usuario -->
+      <div class="sidebar-user">
+        <div class="user-avatar" id="userAvatar">U</div>
+        <div class="user-meta">
+          <div class="user-email" id="userEmail">—</div>
+          <div class="user-plan">Pro Account</div>
+        </div>
+        <button id="btnLogout" class="logout-btn" title="Cerrar sesión">↪</button>
+      </div>
+
+      <!-- Nav principal -->
+      <nav class="sidebar-nav">
+        <button id="navDashboard" class="nav-item nav-item--active">
+          <span class="nav-icon">▤</span> Dashboard
+        </button>
+        <button id="navNewPool" class="nav-item nav-item--new">
+          <span class="nav-icon">＋</span> Nueva Pool
+        </button>
+      </nav>
+
+      <!-- Lista de pools -->
+      <div class="sidebar-pools">
+        <div class="sidebar-pools-label">Mis Pools</div>
+        <div id="sidebarPoolList" class="sb-pool-list">
+          <div class="sb-pool-empty">Sin pools guardadas</div>
+        </div>
+      </div>
+
+    </div>
+  </aside>
+
+  <!-- ─── CONTENIDO PRINCIPAL ──────────────────────────────────── -->
+  <main class="main-content" id="mainContent">
+
+    <!-- ══ VISTA DASHBOARD ════════════════════════════════════ -->
+    <div id="dashView">
+
+      <header class="page-header">
+        <div>
+          <h1 class="page-title">Dashboard</h1>
+          <p class="page-sub">Resumen de tu portfolio de liquidity pools</p>
+        </div>
+      </header>
+
+      <!-- Cargando -->
+      <div id="dashLoading" class="center-loading hidden">
+        <div class="spinner"></div><span>Cargando pools…</span>
+      </div>
+
+      <!-- Estado vacío -->
+      <div id="dashEmpty" class="dash-empty hidden">
+        <div class="dash-empty-icon">◈</div>
+        <h2>Bienvenido a LP Tracker Pro</h2>
+        <p>Crea tu primera pool para empezar a hacer seguimiento de tu liquidez en DeFi.</p>
+        <button id="btnFirstPool" class="btn btn-primary btn-lg">
+          <span>⚡</span> Crear mi primera pool
+        </button>
+      </div>
+
+      <!-- Resumen del portfolio -->
+      <div id="dashSummary" class="portfolio-summary hidden">
+        <div class="ps-stat">
+          <span class="ps-label">Total invertido</span>
+          <span class="ps-value neutral" id="pfInvertido">—</span>
+        </div>
+        <div class="ps-stat">
+          <span class="ps-label">Valor actual</span>
+          <span class="ps-value neutral" id="pfValor">—</span>
+        </div>
+        <div class="ps-stat ps-stat--hl">
+          <span class="ps-label">PnL total</span>
+          <span class="ps-value" id="pfPnL">—</span>
+        </div>
+        <div class="ps-stat">
+          <span class="ps-label">Fees totales</span>
+          <span class="ps-value positive" id="pfFees">—</span>
+        </div>
+        <div class="ps-stat">
+          <span class="ps-label">ROI promedio</span>
+          <span class="ps-value" id="pfROI">—</span>
+        </div>
+        <div class="ps-stat">
+          <span class="ps-label">Pools activas</span>
+          <span class="ps-value neutral" id="pfCount">—</span>
+        </div>
+      </div>
+
+      <!-- Grid de cards -->
+      <div id="poolCardsGrid" class="pool-cards-grid hidden"></div>
+
+    </div>
+
+    <!-- ══ VISTA POOL DETALLE ══════════════════════════════════ -->
+    <div id="poolView" class="hidden">
+
+      <header class="page-header">
+        <div class="page-header-left">
+          <button id="btnVolverDash" class="btn-back">← Volver</button>
+          <div>
+            <h1 class="page-title" id="poolViewTitle">Nueva Pool</h1>
+            <p class="page-sub" id="poolViewSub">Completa los datos y calcula tu rendimiento</p>
+          </div>
+        </div>
+        <div class="page-header-right">
+          <button id="btnGuardarPool" class="btn btn-secondary">
+            <span class="btn-text" id="btnGuardarLabel">Guardar Pool</span>
+            <span class="btn-spin hidden"></span>
+          </button>
+          <button id="btnEliminarPool" class="btn btn-danger hidden">Eliminar</button>
+        </div>
+      </header>
+
+      <!-- ── FORMULARIO ──────────────────────────────────── -->
+      <section class="card">
+        <h2 class="card-title">Datos de la posición</h2>
+
+        <div class="form-row cols-2">
+          <div class="form-group">
+            <label class="label" for="tokenA">Token A</label>
+            <input class="input" type="text" id="tokenA" placeholder="ej. ETH" maxlength="20" autocomplete="off" />
+          </div>
+          <div class="form-group">
+            <label class="label" for="tokenB">Token B</label>
+            <input class="input" type="text" id="tokenB" placeholder="ej. USDC" maxlength="20" autocomplete="off" />
+          </div>
+        </div>
+
+        <div class="form-block">
+          <h3 class="form-block-title">Al entrar al pool</h3>
+          <div class="form-row cols-4">
+            <div class="form-group">
+              <label class="label" for="qa0">Cantidad Token A</label>
+              <input class="input" type="number" id="qa0" placeholder="0.00" min="0" step="any" />
+            </div>
+            <div class="form-group">
+              <label class="label" for="qb0">Cantidad Token B</label>
+              <input class="input" type="number" id="qb0" placeholder="0.00" min="0" step="any" />
+            </div>
+            <div class="form-group">
+              <label class="label" for="pa0">Precio Token A (USD)</label>
+              <input class="input" type="number" id="pa0" placeholder="0.00" min="0" step="any" />
+            </div>
+            <div class="form-group">
+              <label class="label" for="pb0">Precio Token B (USD)</label>
+              <input class="input" type="number" id="pb0" placeholder="0.00" min="0" step="any" />
+            </div>
+            <div class="form-group">
+              <label class="label" for="fechaEntrada">Fecha de entrada</label>
+              <input class="input" type="date" id="fechaEntrada" />
+            </div>
+          </div>
+        </div>
+
+        <div class="form-block">
+          <h3 class="form-block-title">Estado actual</h3>
+          <div class="form-row cols-4">
+            <div class="form-group">
+              <label class="label" for="pa1">Precio actual Token A (USD)</label>
+              <input class="input" type="number" id="pa1" placeholder="0.00" min="0" step="any" />
+            </div>
+            <div class="form-group">
+              <label class="label" for="pb1">Precio actual Token B (USD)</label>
+              <input class="input" type="number" id="pb1" placeholder="0.00" min="0" step="any" />
+            </div>
+            <div class="form-group">
+              <label class="label" for="fees">Fees acumuladas (USD)</label>
+              <input class="input" type="number" id="fees" placeholder="0.00" min="0" step="any" />
+            </div>
+            <div class="form-group">
+              <label class="label" for="fechaActual">Fecha actual</label>
+              <input class="input" type="date" id="fechaActual" />
+            </div>
+          </div>
+        </div>
+
+        <div id="errorMsg" class="error-banner hidden"></div>
+
+        <div class="form-actions">
+          <button id="btnCalcular" class="btn btn-primary btn-lg">
+            <span>⚡</span> Calcular rendimiento
+          </button>
+          <button id="btnLimpiar" class="btn btn-ghost">Limpiar campos</button>
+        </div>
+      </section>
+
+      <!-- ── RESULTADOS ──────────────────────────────────────── -->
+      <section id="resultsSection" class="hidden">
+
+        <div id="summaryBanner" class="summary-banner"></div>
+
+        <div class="metrics-grid grid-4">
+          <div class="metric-card">
+            <div class="metric-label">Inversión inicial</div>
+            <div class="metric-value neutral" id="rInicial">$0.00</div>
+            <div class="metric-detail" id="rInicialComp">—</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Valor actual del pool</div>
+            <div class="metric-value neutral" id="rPool">$0.00</div>
+            <div class="metric-detail" id="rPoolComp">—</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">
+              Valor HODL
+              <button class="tip-btn" data-tip="hodl">?</button>
+            </div>
+            <div class="metric-value neutral" id="rHODL">$0.00</div>
+            <div class="metric-detail">Si hubieras guardado los tokens</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">Fees ganadas</div>
+            <div class="metric-value positive" id="rFees">$0.00</div>
+            <div class="metric-detail" id="rFeesNote">—</div>
+          </div>
+        </div>
+
+        <div class="metrics-grid grid-4">
+          <div class="metric-card metric-card--hl">
+            <div class="metric-label">
+              Impermanent Loss
+              <button class="tip-btn" data-tip="il">?</button>
+            </div>
+            <div class="metric-value negative" id="rILpct">0.00%</div>
+            <div class="metric-detail" id="rILusd">$0.00 vs HODL</div>
+            <div class="il-track"><div class="il-fill" id="ilBarFill"></div></div>
+          </div>
+          <div class="metric-card metric-card--hl">
+            <div class="metric-label">
+              PnL Real
+              <button class="tip-btn" data-tip="pnl">?</button>
+            </div>
+            <div class="metric-value" id="rPnL">$0.00</div>
+            <div class="metric-detail" id="rPnLvsHODL">vs HODL: —</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">ROI Total</div>
+            <div class="metric-value neutral" id="rROI">0.00%</div>
+            <div class="metric-detail" id="rDias">0 días en el pool</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-label">ROI Mensualizado</div>
+            <div class="metric-value neutral" id="rROIMensual">0.00%/mes</div>
+            <div class="metric-detail" id="rROIAnual">0.00% APR</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 class="card-title">Desglose completo</h3>
+          <div class="table-scroll">
+            <table class="breakdown-table">
+              <thead><tr><th>Concepto</th><th>Valor</th><th>Detalle</th></tr></thead>
+              <tbody id="breakdownBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- ── MOTOR DE DECISIÓN ───────────────────────────────── -->
+      <section id="decisionSection" class="card hidden">
+        <h2 class="card-title">
+          Motor de Decisión
+          <span class="card-badge">Health Score</span>
+        </h2>
+
+        <div class="decision-layout">
+          <div class="decision-gauge">
+            <div class="gauge-num" id="healthScore">—</div>
+            <div class="gauge-sub">/ 100</div>
+            <div class="gauge-track">
+              <div class="gauge-fill" id="healthBarFill"></div>
+            </div>
+          </div>
+          <div class="decision-signal" id="decisionSignalBox">
+            <div class="signal-emoji" id="senalEmoji">⚪</div>
+            <div class="signal-name" id="senalLabel">Calculando…</div>
+            <p class="signal-desc" id="senalDesc"></p>
+            <div class="signal-accion" id="senalAccion"></div>
+          </div>
+        </div>
+
+        <div class="factores-header">
+          <span>Factor</span><span>Puntuación</span><span>Estado</span>
+        </div>
+        <ul class="factores-list" id="factoresList"></ul>
+      </section>
+
+      <!-- ── SIMULADOR ──────────────────────────────────────── -->
+      <section id="simulatorSection" class="card hidden">
+        <h2 class="card-title">
+          Simulador de Precio
+          <span class="card-badge">¿Qué pasa si…?</span>
+        </h2>
+        <p class="sim-intro">
+          Si el precio de <strong id="simTokenName">Token A</strong> llegara a:
+        </p>
+        <div class="sim-input-row">
+          <input type="number" id="simPrecio" class="input"
+                 placeholder="Precio hipotético ($)" min="0" step="any" />
+          <button id="btnSimular" class="btn btn-secondary">Calcular escenario</button>
+        </div>
+        <div id="simResults" class="sim-results hidden">
+          <div class="sim-row"><span>Nuevo Impermanent Loss</span><span id="simIL" class="sim-val">—</span></div>
+          <div class="sim-row"><span>Nuevo valor del pool</span><span id="simPool" class="sim-val">—</span></div>
+          <div class="sim-row"><span>Nuevo PnL</span><span id="simPnL" class="sim-val">—</span></div>
+          <div class="sim-row sim-row--diff">
+            <span>Diferencia vs estado actual</span>
+            <span id="simDiff" class="sim-val">—</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── REGISTRO DIARIO ────────────────────────────────── -->
+      <section class="card">
+        <div class="log-header-row">
+          <div>
+            <h2 class="card-title" style="margin-bottom:2px">Registro Diario</h2>
+            <p class="log-hint">Snapshots guardados en la base de datos, vinculados a tu cuenta.</p>
+          </div>
+          <div class="log-add-row">
+            <input type="text" id="logNota" class="input input--sm"
+                   placeholder="Nota del día (opcional)" maxlength="120" />
+            <button id="btnRegistrarHoy" class="btn btn-accent btn-sm">
+              <span class="btn-text">+ Registrar hoy</span>
+              <span class="btn-spin hidden"></span>
+            </button>
+          </div>
+        </div>
+
+        <div id="logEmpty" class="log-empty">
+          Sin registros. Calcula y haz clic en "+ Registrar hoy".
+        </div>
+        <div id="logLoading" class="center-loading hidden" style="padding:20px 0">
+          <div class="spinner spinner--sm"></div>
+        </div>
+        <div id="logTableWrap" class="table-scroll hidden">
+          <table class="log-table">
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th id="logColA">Precio A</th>
+                <th id="logColB">Precio B</th>
+                <th>Valor pool</th>
+                <th>IL %</th>
+                <th>PnL</th>
+                <th>ROI %</th>
+                <th>Nota</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="logBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+    </div><!-- /poolView -->
+  </main>
+</div><!-- /appScreen -->
+
+<!-- ══ TOOLTIP MODAL ════════════════════════════════════════════ -->
+<div id="tipOverlay" class="tip-overlay hidden">
+  <div class="tip-modal">
+    <button id="tipClose" class="tip-close">×</button>
+    <h3 id="tipTitle" class="tip-title"></h3>
+    <div id="tipBody" class="tip-body"></div>
+  </div>
+</div>
+
+<!-- ══ TOAST ════════════════════════════════════════════════════ -->
+<div id="toast" class="toast hidden"></div>
+
+<!-- Scripts — el orden importa -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="supabaseClient.js"></script>
+<script src="auth.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
