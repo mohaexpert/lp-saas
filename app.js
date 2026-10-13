@@ -96,12 +96,32 @@ function calcularDias(fechaA, fechaB) {
   return Math.max(0, Math.round(diff / 86_400_000));
 }
 
+/**
+ * Posición Uniswap V3 (liquidez concentrada): las cantidades salen de la
+ * liquidez y el rango, no de x·y=k. Con el precio leído de la blockchain se
+ * usan las cantidades reales; con otro precio (edición manual) se simulan.
+ */
+function posicionV3(d, pa1, pb1) {
+  const live = Math.abs(pa1 - d.v3.pa1Live) < 1e-9 && Math.abs(pb1 - d.v3.pb1Live) < 1e-9;
+  const { qa, qb } = live ? { qa: d.qa1, qb: d.qb1 } : OnChain.simular(d.v3, pa1, pb1);
+  const valorPool = qa * pa1 + qb * pb1;
+  const valorHODL = calcularHODL(d.qa0, d.qb0, pa1, pb1);
+  return { qa1: qa, qb1: qb, valorPool, ilPct: valorHODL > 0 ? valorPool / valorHODL - 1 : 0 };
+}
+
+/** ¿Hay datos suficientes para calcular? (V3 admite depósitos de un solo token) */
+function datosCompletos(d) {
+  if (!(d.pa0 > 0 && d.pb0 > 0 && d.pa1 > 0 && d.pb1 > 0)) return false;
+  return d.v3 ? (d.qa0 > 0 || d.qb0 > 0) : (d.qa0 > 0 && d.qb0 > 0);
+}
+
 /** Punto de entrada: devuelve todas las métricas derivadas */
 function ejecutarCalculos(d) {
   const valorInicial          = d.qa0 * d.pa0 + d.qb0 * d.pb0;
-  const { qa1, qb1, valorPool } = calcularPool(d.qa0, d.qb0, d.pa1, d.pb1);
+  const { qa1, qb1, valorPool, ilPct } = d.v3
+    ? posicionV3(d, d.pa1, d.pb1)
+    : { ...calcularPool(d.qa0, d.qb0, d.pa1, d.pb1), ilPct: calcularIL(d.pa0, d.pb0, d.pa1, d.pb1) };
   const valorHODL             = calcularHODL(d.qa0, d.qb0, d.pa1, d.pb1);
-  const ilPct                 = calcularIL(d.pa0, d.pb0, d.pa1, d.pb1);
   const ilUsd                 = valorHODL * ilPct;
   const pnl                   = calcularPnL(valorPool, d.fees, valorInicial);
   const roi                   = calcularROI(pnl, valorInicial);
@@ -229,7 +249,10 @@ function calcularSenal(score) {
    FORMULARIO
 ================================================================ */
 function leerForm() {
+  // Las pools on-chain conservan sus datos de blockchain (cantidades vivas, rango…)
+  const prev = state.activePool?.data?.v3 ? state.activePool.data : null;
   return {
+    ...(prev ? { v3: prev.v3, qa1: prev.qa1, qb1: prev.qb1 } : {}),
     tokenA:       $('tokenA').value.trim() || 'Token A',
     tokenB:       $('tokenB').value.trim() || 'Token B',
     qa0:          parseFloat($('qa0').value)  || 0,
@@ -264,8 +287,12 @@ function limpiarForm() {
 }
 
 function validar(d) {
-  if (!(d.qa0 > 0)) return 'Cantidad de Token A debe ser mayor a 0.';
-  if (!(d.qb0 > 0)) return 'Cantidad de Token B debe ser mayor a 0.';
+  if (d.v3) {
+    if (!(d.qa0 > 0 || d.qb0 > 0)) return 'Escribe cuánto depositaste al entrar (al menos uno de los dos tokens).';
+  } else {
+    if (!(d.qa0 > 0)) return 'Cantidad de Token A debe ser mayor a 0.';
+    if (!(d.qb0 > 0)) return 'Cantidad de Token B debe ser mayor a 0.';
+  }
   if (!(d.pa0 > 0)) return 'Precio inicial de Token A debe ser mayor a 0.';
   if (!(d.pb0 > 0)) return 'Precio inicial de Token B debe ser mayor a 0.';
   if (!(d.pa1 > 0)) return 'Precio actual de Token A debe ser mayor a 0.';
@@ -395,10 +422,11 @@ function renderDecision(res) {
 function renderSimulador(paNueva) {
   if (!state.lastCalc) { toast('Calcula primero para usar el simulador', 'err'); return; }
   const { d, res: resActual } = state.lastCalc;
-  if (!(d.qa0 > 0 && d.qb0 > 0 && d.pa0 > 0 && d.pb0 > 0 && d.pb1 > 0)) return;
+  if (!datosCompletos(d)) return;
 
-  const { valorPool } = calcularPool(d.qa0, d.qb0, paNueva, d.pb1);
-  const ilPct         = calcularIL(d.pa0, d.pb0, paNueva, d.pb1);
+  const { valorPool, ilPct } = d.v3
+    ? posicionV3(d, paNueva, d.pb1)
+    : { ...calcularPool(d.qa0, d.qb0, paNueva, d.pb1), ilPct: calcularIL(d.pa0, d.pb0, paNueva, d.pb1) };
   const valorInicial  = d.qa0 * d.pa0 + d.qb0 * d.pb0;
   const pnl           = calcularPnL(valorPool, d.fees, valorInicial);
   const diffPnl       = pnl - resActual.pnl;
@@ -545,6 +573,7 @@ async function cargarPools() {
     state.pools = await DB.getPools(state.user.id);
     renderSidebarPools();
     renderDashboard();
+    refrescarOnchain();
   } catch (err) {
     toast('Error cargando pools: ' + err.message, 'err');
   } finally {
@@ -578,6 +607,7 @@ async function guardarPool() {
     $('btnEliminarPool').classList.remove('hidden');
     $('btnGuardarLabel').textContent = 'Actualizar Pool';
     toast('Pool guardada correctamente ✓', 'ok');
+    if (esOnchain(saved)) refrescarOnchain([saved]);   // datos frescos + primer registro automático
   } catch (err) {
     toast('Error guardando: ' + err.message, 'err');
   } finally {
@@ -620,7 +650,8 @@ function abrirPool(pool) {
 
   // Intentar recalcular con los datos guardados
   const d = pool.data;
-  if (d.qa0 > 0 && d.qb0 > 0 && d.pa0 > 0 && d.pb0 > 0 && d.pa1 > 0 && d.pb1 > 0) {
+  renderOnchainCard(pool);
+  if (datosCompletos(d)) {
     const res = ejecutarCalculos(d);
     state.lastCalc = { res, d };
     renderResultados(res, d);
@@ -638,6 +669,7 @@ function nuevaPool() {
   state.logs         = [];
 
   limpiarForm();
+  renderOnchainCard(null);
   $('poolViewTitle').textContent = 'Nueva Pool';
   $('poolViewSub').textContent   = 'Completa los datos y calcula tu rendimiento';
   $('btnEliminarPool').classList.add('hidden');
@@ -690,7 +722,7 @@ function renderSidebarPools() {
 function tryCalc(data) {
   try {
     const d = data || {};
-    if (!(d.qa0 > 0 && d.qb0 > 0 && d.pa0 > 0 && d.pb0 > 0 && d.pa1 > 0 && d.pb1 > 0)) return null;
+    if (!datosCompletos(d)) return null;
     return ejecutarCalculos(d);
   } catch { return null; }
 }
@@ -746,9 +778,15 @@ function renderPoolCards() {
     const res   = tryCalc(pool.data);
     const d     = pool.data || {};
     const dias  = calcularDias(d.fechaEntrada, d.fechaActual || hoy());
+    const v3    = d.v3;
+    const rangoHtml = v3 ? (() => {
+      const e = v3.cerrada ? ['closed', 'Cerrada'] : v3.inRange ? ['in', 'En rango'] : ['out', 'Fuera de rango'];
+      return `<div class="pc-onchain">${escHtml(nombreRed(v3.chain))} · ${fmt(v3.feeTier, v3.feeTier < 0.1 ? 2 : 1)}%
+        <span class="oc-state oc-state--${e[0]}">● ${e[1]}</span></div>`;
+    })() : '';
 
     let metricsHtml = `<div class="pcm-nodata" style="font-size:.76rem;color:var(--text-3);padding:8px 0">
-      Actualiza los precios para ver métricas
+      ${v3 ? 'Completa el depósito inicial para ver PnL y ROI' : 'Actualiza los precios para ver métricas'}
     </div>`;
     let scoreBarHtml = '';
     let senalBadge   = '<span class="pc-signal">⚪ Sin datos</span>';
@@ -793,6 +831,7 @@ function renderPoolCards() {
           <div>
             <div class="pc-name">${escHtml(pool.nombre)}</div>
             <div class="pc-date">${d.fechaEntrada || '—'} · ${dias} días</div>
+            ${rangoHtml}
           </div>
           ${senalBadge}
         </div>
@@ -833,9 +872,13 @@ function showView(view) {
   state.view = view;
   const isDash = view === 'dashboard';
   $('dashView').classList.toggle('hidden', !isDash);
-  $('poolView').classList.toggle('hidden', isDash);
+  $('poolView').classList.toggle('hidden', view !== 'pool');
+  $('importView').classList.toggle('hidden', view !== 'import');
   $('navDashboard').classList.toggle('nav-item--active', isDash);
+  $('navImport').classList.toggle('nav-item--active', view === 'import');
   if (isDash) renderDashboard();
+  if (view === 'import') renderPosicionesEncontradas();
+  $('mainContent').scrollTop = 0;
 }
 
 /* ================================================================
@@ -944,6 +987,301 @@ function toast(msg, tipo = 'ok') {
 }
 
 /* ================================================================
+   ON-CHAIN — importar wallet, actualización y registro automático
+================================================================ */
+const AUTO_REGISTRO_HORAS = 6;     // snapshot automático como máximo cada 6 h
+const AUTO_REFRESCO_MIN   = 5;     // con la app abierta, refresca cada 5 min
+
+const esOnchain = pool => !!pool?.data?.v3;
+const nombreRed = chain => OnChain.cadenas[chain]?.nombre || chain;
+const linkUniswap = v3 => `https://app.uniswap.org/positions/v3/${v3.chain}/${v3.tokenId}`;
+const fmtPrecio = n => !isFinite(n) ? '—' : n >= 1000 ? fmt(n, 0) : n >= 1 ? fmt(n, 2) : fmtNum(n, 6);
+
+function haceCuanto(iso) {
+  if (!iso) return 'nunca';
+  const min = Math.round((Date.now() - new Date(iso)) / 60000);
+  if (min < 1)  return 'hace un momento';
+  if (min < 60) return `hace ${min} min`;
+  const h = Math.round(min / 60);
+  return h < 24 ? `hace ${h} h` : `hace ${Math.round(h / 24)} d`;
+}
+
+/** Combina una posición leída de la blockchain con los datos ya guardados */
+function dataDesdePosicion(pos, prev = {}) {
+  const tienePrev = prev.qa0 > 0 || prev.qb0 > 0;
+  const e = tienePrev
+    ? { qa0: prev.qa0, qb0: prev.qb0, pa0: prev.pa0, pb0: prev.pb0, fechaEntrada: prev.fechaEntrada,
+        feesCobradasA: prev.v3?.feesCobradasA || 0, feesCobradasB: prev.v3?.feesCobradasB || 0,
+        fuente: prev.v3?.fuenteEntrada || 'manual' }
+    : (pos.entrada || {});
+  const fees = (e.feesCobradasA || 0) * pos.pa1 + (e.feesCobradasB || 0) * pos.pb1 + pos.feesPendientesUSD;
+
+  return {
+    tokenA: pos.tokenA, tokenB: pos.tokenB,
+    qa0: e.qa0, qb0: e.qb0, pa0: e.pa0, pb0: e.pb0,
+    pa1: pos.pa1, pb1: pos.pb1, fees,
+    fechaEntrada: e.fechaEntrada || '', fechaActual: hoy(),
+    qa1: pos.qa1, qb1: pos.qb1,
+    v3: {
+      chain: pos.chain, owner: pos.owner, tokenId: pos.tokenId, pool: pos.pool, feeTier: pos.feeTier,
+      addrA: pos.addrA, addrB: pos.addrB, aIsToken0: pos.aIsToken0, dec0: pos.dec0, dec1: pos.dec1,
+      tickLower: pos.tickLower, tickUpper: pos.tickUpper, tick: pos.tick, liquidity: pos.liquidity,
+      inRange: pos.inRange, cerrada: pos.cerrada, rangoMin: pos.rangoMin, rangoMax: pos.rangoMax,
+      precioActualAenB: pos.precioActualAenB, pa1Live: pos.pa1, pb1Live: pos.pb1,
+      feesPendientesUSD: pos.feesPendientesUSD,
+      feesCobradasA: e.feesCobradasA || 0, feesCobradasB: e.feesCobradasB || 0,
+      fuenteEntrada: e.fuente || null,
+      actualizado: pos.actualizado,
+      ultimoRegistro: prev.v3?.ultimoRegistro || null
+    }
+  };
+}
+
+/** Guarda un snapshot automático si toca (cada AUTO_REGISTRO_HORAS) */
+async function autoRegistrar(pool) {
+  const d = pool.data;
+  if (!datosCompletos(d) || d.v3.cerrada) return false;
+  const ultimo = d.v3.ultimoRegistro ? new Date(d.v3.ultimoRegistro).getTime() : 0;
+  if (Date.now() - ultimo < AUTO_REGISTRO_HORAS * 3600_000) return false;
+
+  const res = ejecutarCalculos(d);
+  const ahora = new Date();
+  const log = await DB.saveLog({
+    user_id: state.user.id, pool_id: pool.id,
+    fecha: ahora.toISOString().slice(0, 10), hora: ahora.toTimeString().slice(0, 5),
+    precio_a: d.pa1, precio_b: d.pb1, valor_pool: res.valorPool,
+    il: res.ilPct, pnl: res.pnl, roi: res.roi,
+    nota: `Auto · ${d.v3.inRange ? 'en rango' : 'FUERA de rango'}`
+  });
+  d.v3.ultimoRegistro = ahora.toISOString();
+  if (state.activePoolId === pool.id) { state.logs.unshift(log); renderLogs(); }
+  return true;
+}
+
+/** Relee de la blockchain todas las pools on-chain (o las indicadas) */
+let _refrescando = null;
+async function refrescarOnchain(pools = state.pools.filter(esOnchain)) {
+  if (!pools.length) return;
+  if (_refrescando) return _refrescando;
+  setSyncLabel('Actualizando desde la blockchain…');
+
+  _refrescando = (async () => {
+    // Agrupar por red y wallet para hacer pocas llamadas
+    const grupos = {};
+    pools.forEach(p => { const k = p.data.v3.chain + '|' + p.data.v3.owner; (grupos[k] ||= []).push(p); });
+
+    let errores = 0, registros = 0;
+    await Promise.all(Object.values(grupos).map(async grupo => {
+      const { chain, owner } = grupo[0].data.v3;
+      const entradas = {};
+      grupo.forEach(p => { if (p.data.qa0 > 0 || p.data.qb0 > 0) entradas[p.data.v3.tokenId] = true; });
+      try {
+        const posiciones = await OnChain.leerPosiciones(chain, owner, grupo.map(p => p.data.v3.tokenId),
+          { incluirCerradas: true, entradas });
+        for (const pool of grupo) {
+          const pos = posiciones.find(x => x.tokenId === pool.data.v3.tokenId);
+          if (!pos) continue;
+          pool.data = dataDesdePosicion(pos, pool.data);
+          if (await autoRegistrar(pool)) registros++;
+          const saved = await DB.savePool({ id: pool.id, userId: state.user.id, nombre: pool.nombre, data: pool.data });
+          Object.assign(pool, saved, { data: pool.data });
+        }
+      } catch (err) { errores++; console.error(err); }
+    }));
+
+    renderSidebarPools();
+    if (state.view === 'dashboard') renderDashboard();
+    if (state.view === 'pool' && esOnchain(state.activePool)) refrescarVistaPool();
+    setSyncLabel(errores ? 'Algunas redes no respondieron · reintenta en un momento'
+                         : `Actualizado ${haceCuanto(new Date().toISOString())}` + (registros ? ` · ${registros} registro(s) automático(s)` : ''));
+  })();
+  try { await _refrescando; } finally { _refrescando = null; }
+}
+
+function setSyncLabel(txt) { const el = $('dashSync'); if (el) el.textContent = txt; }
+
+/** Vuelve a pintar el detalle de la pool activa con sus datos nuevos */
+function refrescarVistaPool() {
+  const pool = state.activePool;
+  escribirForm(pool.data);
+  renderOnchainCard(pool);
+  if (datosCompletos(pool.data)) {
+    const res = ejecutarCalculos(pool.data);
+    state.lastCalc = { res, d: pool.data };
+    renderResultados(res, pool.data);
+    renderDecision(res);
+    $('simulatorSection').classList.remove('hidden');
+  }
+}
+
+/* ── Tarjeta on-chain en el detalle ─────────────────────────────── */
+function renderOnchainCard(pool) {
+  const card = $('onchainCard');
+  const v3 = pool?.data?.v3;
+  if (!v3) { card.classList.add('hidden'); return; }
+  const d = pool.data;
+
+  // Posición del precio dentro del rango (con margen visual del 25 %)
+  const ancho = v3.rangoMax - v3.rangoMin;
+  const lo = v3.rangoMin - ancho * 0.25, hi = v3.rangoMax + ancho * 0.25;
+  const pct = x => Math.max(0, Math.min(100, (x - lo) / (hi - lo) * 100));
+  const estado = v3.cerrada ? ['closed', 'Cerrada'] : v3.inRange ? ['in', 'En rango'] : ['out', 'Fuera de rango'];
+  const faltaEntrada = !(d.qa0 > 0 || d.qb0 > 0) || !(d.pa0 > 0);
+
+  card.innerHTML = `
+    <div class="oc-top">
+      <div class="oc-chips">
+        <span class="oc-chip">${escHtml(nombreRed(v3.chain))}</span>
+        <span class="oc-chip">Uniswap V3 · ${fmt(v3.feeTier, v3.feeTier < 0.1 ? 2 : 1)}%</span>
+        <a class="oc-chip oc-chip--link" href="${linkUniswap(v3)}" target="_blank" rel="noopener">#${escHtml(v3.tokenId)} ↗</a>
+        <span class="oc-state oc-state--${estado[0]}">● ${estado[1]}</span>
+      </div>
+      <div class="oc-sync">
+        <span>Actualizado ${haceCuanto(v3.actualizado)}</span>
+        <button id="btnRefreshPool" class="btn btn-secondary btn-sm">↻ Actualizar</button>
+      </div>
+    </div>
+    <div class="oc-range">
+      <div class="oc-range-track">
+        <div class="oc-range-band" style="left:${pct(v3.rangoMin)}%;width:${pct(v3.rangoMax) - pct(v3.rangoMin)}%"></div>
+        <div class="oc-range-now oc-range-now--${estado[0]}" style="left:${pct(v3.precioActualAenB)}%"></div>
+      </div>
+      <div class="oc-range-labels">
+        <span>Mín ${fmtPrecio(v3.rangoMin)}</span>
+        <span class="oc-range-cur">Precio ${fmtPrecio(v3.precioActualAenB)} ${escHtml(d.tokenB)} por ${escHtml(d.tokenA)}</span>
+        <span>Máx ${fmtPrecio(v3.rangoMax)}</span>
+      </div>
+    </div>
+    <div class="oc-stats">
+      <div><span class="oc-k">Ahora en la pool</span><span class="oc-v">${fmtNum(d.qa1)} ${escHtml(d.tokenA)} + ${fmtNum(d.qb1, 2)} ${escHtml(d.tokenB)}</span></div>
+      <div><span class="oc-k">Fees sin cobrar</span><span class="oc-v positive">${fmtUSD(v3.feesPendientesUSD)}</span></div>
+      <div><span class="oc-k">Entrada</span><span class="oc-v">${
+        faltaEntrada ? '<span class="warning">Falta completar</span>'
+        : `${escHtml(d.fechaEntrada || '—')} · ${v3.fuenteEntrada === 'thegraph' ? 'automática' : 'manual'}`}</span></div>
+    </div>
+    ${faltaEntrada ? `<div class="oc-hint">
+      No se encontró el historial de entrada${OnChain.tieneGraphKey() ? '' : ' (falta la clave de The Graph)'}.
+      Escribe abajo cuánto depositaste de cada token y la <strong>fecha de entrada</strong>:
+      los precios de ese día se completan solos.</div>` : ''}`;
+  card.classList.remove('hidden');
+  $('btnRefreshPool').addEventListener('click', async () => {
+    setBtnLoading('btnRefreshPool', true);
+    await refrescarOnchain([state.activePool]);
+    toast('Datos actualizados desde la blockchain ✓', 'ok');
+  });
+}
+
+/** Al poner la fecha de entrada en una pool on-chain, trae los precios de ese día */
+async function autocompletarPreciosEntrada() {
+  const v3 = state.activePool?.data?.v3;
+  const fecha = $('fechaEntrada').value;
+  if (!v3 || !fecha || (parseFloat($('pa0').value) > 0 && parseFloat($('pb0').value) > 0)) return;
+  try {
+    const { pa0, pb0 } = await OnChain.preciosEnFecha(v3.chain, v3.addrA, v3.addrB, fecha);
+    if (pa0) $('pa0').value = +pa0.toPrecision(6);
+    if (pb0) $('pb0').value = +pb0.toPrecision(6);
+    if (pa0 || pb0) toast(`Precios del ${fecha} completados`, 'ok');
+  } catch { toast('No se encontraron precios para esa fecha', 'err'); }
+}
+
+/* ── Vista Importar wallet ──────────────────────────────────────── */
+let _posicionesEncontradas = [];
+
+function abrirImportar() {
+  try { $('walletInput').value ||= localStorage.getItem('lp_wallet') || ''; } catch {}
+  renderGraphStatus();
+  showView('import');
+}
+
+function renderGraphStatus() {
+  const ok = OnChain.tieneGraphKey();
+  $('graphStatus').innerHTML = ok
+    ? '<span class="positive">● Conectado</span> — el depósito y la fecha de entrada se completan solos.'
+    : '<span class="warning">● Sin clave</span> — verás todo en vivo, pero el depósito inicial lo escribes tú una vez.';
+}
+
+async function buscarWallet() {
+  const wallet = $('walletInput').value.trim();
+  try { localStorage.setItem('lp_wallet', wallet); } catch {}
+  $('importResults').innerHTML = '';
+  $('importStatus').innerHTML = '<div class="spinner"></div><span>Buscando posiciones en Ethereum, Arbitrum y Base…</span>';
+  $('importStatus').className = 'center-loading';
+  setBtnLoading('btnBuscarWallet', true);
+  try {
+    const { posiciones, errores } = await OnChain.buscarWallet(wallet, { incluirCerradas: $('chkCerradas').checked });
+    _posicionesEncontradas = posiciones;
+    const aviso = errores.length ? ` · ${errores.join(' · ')}` : '';
+    $('importStatus').className = 'import-status';
+    $('importStatus').textContent = posiciones.length
+      ? `${posiciones.length} posición(es) encontrada(s)${aviso}`
+      : `No hay posiciones abiertas de Uniswap V3 en esta wallet${aviso}`;
+    renderPosicionesEncontradas();
+  } catch (err) {
+    $('importStatus').className = 'import-status negative';
+    $('importStatus').textContent = err.message;
+  } finally {
+    setBtnLoading('btnBuscarWallet', false);
+  }
+}
+
+const yaSeguida = pos => state.pools.find(p => p.data?.v3?.chain === pos.chain && p.data.v3.tokenId === pos.tokenId);
+
+function renderPosicionesEncontradas() {
+  const lista = _posicionesEncontradas;
+  $('btnSeguirTodas').classList.toggle('hidden', !lista.some(p => !yaSeguida(p)));
+  $('importResults').innerHTML = lista.map((pos, i) => {
+    const seguida = yaSeguida(pos);
+    const estado = pos.cerrada ? ['closed', 'Cerrada'] : pos.inRange ? ['in', 'En rango'] : ['out', 'Fuera de rango'];
+    return `
+      <div class="pool-card import-card">
+        <div class="pc-header">
+          <div>
+            <div class="pc-name">${escHtml(pos.tokenA)}/${escHtml(pos.tokenB)}</div>
+            <div class="pc-date">${escHtml(nombreRed(pos.chain))} · ${fmt(pos.feeTier, pos.feeTier < 0.1 ? 2 : 1)}% · #${escHtml(pos.tokenId)}</div>
+          </div>
+          <span class="oc-state oc-state--${estado[0]}">● ${estado[1]}</span>
+        </div>
+        <div class="pc-metrics">
+          <div class="pcm-item"><span class="pcm-label">Valor</span><span class="pcm-value neutral">${fmtUSD(pos.valorUSD)}</span></div>
+          <div class="pcm-item"><span class="pcm-label">Fees sin cobrar</span><span class="pcm-value positive">${fmtUSD(pos.feesPendientesUSD)}</span></div>
+          <div class="pcm-item"><span class="pcm-label">Rango</span><span class="pcm-value neutral">${fmtPrecio(pos.rangoMin)} – ${fmtPrecio(pos.rangoMax)}</span></div>
+          <div class="pcm-item"><span class="pcm-label">Entrada</span><span class="pcm-value ${pos.entrada ? 'neutral' : 'warning'}">${pos.entrada ? escHtml(pos.entrada.fechaEntrada) : 'Por completar'}</span></div>
+        </div>
+        <div class="pc-footer">
+          ${seguida
+            ? `<button class="pc-btn" data-ver="${seguida.id}">Ya la sigues · Ver →</button>`
+            : `<button class="pc-btn pc-btn--follow" data-seguir="${i}">＋ Seguir esta pool</button>`}
+        </div>
+      </div>`;
+  }).join('');
+
+  $('importResults').querySelectorAll('[data-seguir]').forEach(btn =>
+    btn.addEventListener('click', () => seguirPosiciones([_posicionesEncontradas[+btn.dataset.seguir]], btn)));
+  $('importResults').querySelectorAll('[data-ver]').forEach(btn =>
+    btn.addEventListener('click', () => { const p = state.pools.find(x => x.id === btn.dataset.ver); if (p) abrirPool(p); }));
+}
+
+async function seguirPosiciones(lista, btn) {
+  if (btn) btn.disabled = true;
+  let ok = 0;
+  for (const pos of lista) {
+    if (yaSeguida(pos)) continue;
+    try {
+      const data = dataDesdePosicion(pos);
+      const saved = await DB.savePool({ id: null, userId: state.user.id, nombre: `${pos.tokenA}/${pos.tokenB}`, data });
+      state.pools.unshift(saved);
+      await autoRegistrar(saved);   // primer snapshot inmediato
+      if (saved.data.v3.ultimoRegistro)
+        await DB.savePool({ id: saved.id, userId: state.user.id, nombre: saved.nombre, data: saved.data });
+      ok++;
+    } catch (err) { toast('Error guardando: ' + err.message, 'err'); }
+  }
+  renderSidebarPools();
+  renderPosicionesEncontradas();
+  if (ok) toast(ok === 1 ? 'Pool agregada a tu seguimiento ✓' : `${ok} pools agregadas ✓`, 'ok');
+}
+
+/* ================================================================
    INICIALIZACIÓN
 ================================================================ */
 async function init() {
@@ -1036,6 +1374,26 @@ async function init() {
   $('navNewPool').addEventListener('click',   nuevaPool);
   $('btnFirstPool').addEventListener('click', nuevaPool);
   $('btnVolverDash').addEventListener('click', () => showView('dashboard'));
+  $('navImport').addEventListener('click', abrirImportar);
+  $('btnImportDash').addEventListener('click', abrirImportar);
+  $('btnImportEmpty').addEventListener('click', abrirImportar);
+  $('btnRefreshAll').addEventListener('click', () => refrescarOnchain());
+
+  // ── Importar wallet ────────────────────────────────────────────
+  $('btnBuscarWallet').addEventListener('click', buscarWallet);
+  $('walletInput').addEventListener('keydown', e => { if (e.key === 'Enter') buscarWallet(); });
+  $('btnSeguirTodas').addEventListener('click', e =>
+    seguirPosiciones(_posicionesEncontradas.filter(p => !yaSeguida(p)), e.currentTarget));
+  $('btnGuardarGraphKey').addEventListener('click', () => {
+    try { localStorage.setItem('lp_graph_key', $('graphKeyInput').value.trim()); } catch {}
+    $('graphKeyInput').value = '';
+    renderGraphStatus();
+    toast(OnChain.tieneGraphKey() ? 'Clave guardada ✓' : 'Clave eliminada', 'ok');
+  });
+  $('fechaEntrada').addEventListener('change', autocompletarPreciosEntrada);
+
+  // Con la app abierta, las pools on-chain se mantienen al día solas
+  setInterval(() => { if (state.user && !document.hidden) refrescarOnchain(); }, AUTO_REFRESCO_MIN * 60_000);
 
   // ── Pool actions ───────────────────────────────────────────────
   $('btnGuardarPool').addEventListener('click', guardarPool);

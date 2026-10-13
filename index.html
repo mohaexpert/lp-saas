@@ -111,6 +111,9 @@
         <button id="navDashboard" class="nav-item nav-item--active">
           <span class="nav-icon">▤</span> Dashboard
         </button>
+        <button id="navImport" class="nav-item">
+          <span class="nav-icon">⛓</span> Importar wallet
+        </button>
         <button id="navNewPool" class="nav-item nav-item--new">
           <span class="nav-icon">＋</span> Nueva Pool
         </button>
@@ -138,6 +141,11 @@
           <h1 class="page-title">Dashboard</h1>
           <p class="page-sub">Resumen de tu portfolio de liquidity pools</p>
         </div>
+        <div class="page-header-right">
+          <span id="dashSync" class="dash-sync"></span>
+          <button id="btnRefreshAll" class="btn btn-ghost btn-sm" title="Actualizar desde la blockchain">↻</button>
+          <button id="btnImportDash" class="btn btn-accent btn-sm">⛓ Importar wallet</button>
+        </div>
       </header>
 
       <!-- Cargando -->
@@ -149,10 +157,13 @@
       <div id="dashEmpty" class="dash-empty hidden">
         <div class="dash-empty-icon">◈</div>
         <h2>Bienvenido a LP Tracker Pro</h2>
-        <p>Crea tu primera pool para empezar a hacer seguimiento de tu liquidez en DeFi.</p>
-        <button id="btnFirstPool" class="btn btn-primary btn-lg">
-          <span>⚡</span> Crear mi primera pool
-        </button>
+        <p>Pega tu wallet y la app detecta tus posiciones de Uniswap V3 solas, o crea una pool a mano.</p>
+        <div class="dash-empty-actions">
+          <button id="btnImportEmpty" class="btn btn-primary btn-lg">
+            <span>⛓</span> Importar desde mi wallet
+          </button>
+          <button id="btnFirstPool" class="btn btn-secondary btn-lg">Crear pool a mano</button>
+        </div>
       </div>
 
       <!-- Resumen del portfolio -->
@@ -188,6 +199,46 @@
 
     </div>
 
+    <!-- ══ VISTA IMPORTAR WALLET ═══════════════════════════════ -->
+    <div id="importView" class="hidden">
+
+      <header class="page-header">
+        <div>
+          <h1 class="page-title">Importar desde wallet</h1>
+          <p class="page-sub">Uniswap V3 · Ethereum, Arbitrum y Base</p>
+        </div>
+      </header>
+
+      <section class="card">
+        <label class="label" for="walletInput">Dirección pública de tu wallet</label>
+        <div class="import-row">
+          <input class="input" type="text" id="walletInput" placeholder="0x…" spellcheck="false" autocomplete="off" />
+          <button id="btnBuscarWallet" class="btn btn-primary">
+            <span class="btn-text">Buscar posiciones</span>
+            <span class="btn-spin hidden"></span>
+          </button>
+        </div>
+        <label class="import-check"><input type="checkbox" id="chkCerradas" /> Incluir posiciones cerradas</label>
+        <p class="import-safe">🔒 Solo lectura: la app nunca te pide conectar la wallet, firmar ni aprobar nada.
+          Con la dirección pública solo se pueden <em>ver</em> datos que ya son públicos en la blockchain.</p>
+
+        <details class="import-adv">
+          <summary>Historial de entrada (The Graph)</summary>
+          <p id="graphStatus" class="import-adv-status"></p>
+          <div class="import-row">
+            <input class="input" type="password" id="graphKeyInput" placeholder="API key de thegraph.com/studio" autocomplete="off" />
+            <button id="btnGuardarGraphKey" class="btn btn-secondary">Guardar</button>
+          </div>
+        </details>
+      </section>
+
+      <div class="import-head">
+        <div id="importStatus" class="import-status"></div>
+        <button id="btnSeguirTodas" class="btn btn-accent btn-sm hidden">＋ Seguir todas</button>
+      </div>
+      <div id="importResults" class="pool-cards-grid"></div>
+    </div>
+
     <!-- ══ VISTA POOL DETALLE ══════════════════════════════════ -->
     <div id="poolView" class="hidden">
 
@@ -207,6 +258,9 @@
           <button id="btnEliminarPool" class="btn btn-danger hidden">Eliminar</button>
         </div>
       </header>
+
+      <!-- ── DATOS ON-CHAIN (solo pools importadas) ──────── -->
+      <section id="onchainCard" class="card oc-card hidden"></section>
 
       <!-- ── FORMULARIO ──────────────────────────────────── -->
       <section class="card">
@@ -469,8 +523,11 @@
 
 <!-- Scripts — el orden importa -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
 <script src="supabaseClient.js"></script>
 <script src="auth.js"></script>
+<script src="demo.js"></script>
+<script src="onchain.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
