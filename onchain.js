@@ -25,7 +25,7 @@ const ONCHAIN_CHAINS = {
     rpcs: ['https://arbitrum-one-rpc.publicnode.com', 'https://arbitrum.drpc.org'],
     npm: '0xC36442b4a4522E871399CD717aBDD847Ab11FE88',
     factory: '0x1F98431c8aD98523631AE4a59f267346ea31F984',
-    subgraph: 'FbCGRftH4a3yZugY7TnbYgPJVEv2LvMT6oF1fxPe9aJM',
+    subgraph: 'HyW7A86UEdYVt5b9Lrw8W2F98yKecerHKutZTRbSCX27',
     explorer: 'https://arbiscan.io'
   },
   base: {
@@ -178,12 +178,12 @@ const OnChain = (() => {
     const out = {};
     (j.data?.positions || []).forEach(p => {
       const n = k => parseFloat(p[k]) || 0;
-      // En el subgraph, "collectedFees" incluye el capital retirado: se descuenta
+      // "collectedFees" ya excluye el capital retirado (verificado en las 3 redes)
       out[p.id] = {
         dep0: n('depositedToken0'), dep1: n('depositedToken1'),
         ret0: n('withdrawnToken0'), ret1: n('withdrawnToken1'),
-        fee0: Math.max(0, n('collectedFeesToken0') - n('withdrawnToken0')),
-        fee1: Math.max(0, n('collectedFeesToken1') - n('withdrawnToken1')),
+        fee0: n('collectedFeesToken0'),
+        fee1: n('collectedFeesToken1'),
         timestamp: Number(p.transaction?.timestamp) || null
       };
     });
@@ -283,7 +283,9 @@ const OnChain = (() => {
         const [qa0, qb0] = pick(h.dep0 - h.ret0, h.dep1 - h.ret1);
         const [pa0, pb0] = pick(pe0, pe1);
         const [fcA, fcB] = pick(h.fee0, h.fee1);
-        entrada = { qa0: Math.max(0, qa0), qb0: Math.max(0, qb0), pa0, pb0, feesCobradasA: fcA, feesCobradasB: fcB,
+        const r = (x, n) => +(+x).toPrecision(n);
+        entrada = { qa0: r(Math.max(0, qa0), 8), qb0: r(Math.max(0, qb0), 8), pa0: r(pa0, 6), pb0: r(pb0, 6),
+                    feesCobradasA: fcA, feesCobradasB: fcB,
                     fechaEntrada: new Date(h.timestamp * 1000).toISOString().slice(0, 10), fuente: 'thegraph' };
       }
 
