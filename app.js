@@ -96,6 +96,44 @@ function calcularDias(fechaA, fechaB) {
   return Math.max(0, Math.round(diff / 86_400_000));
 }
 
+/** Días transcurridos con decimales (usa el instante exacto de entrada si se conoce) */
+function diasExactos(d) {
+  const ini = d.v3?.entradaTs ? d.v3.entradaTs * 1000
+            : d.fechaEntrada ? new Date(d.fechaEntrada + 'T00:00:00Z').getTime() : null;
+  if (!ini) return 0;
+  if (!d.v3) return Math.max(1, calcularDias(d.fechaEntrada, d.fechaActual || hoy()));
+  return Math.max((Date.now() - ini) / 86_400_000, 1 / 24);
+}
+
+/**
+ * Proyección según el ritmo de fees (precio constante): lo que la pool
+ * genera por día, llevado a semana y mes, en USD y % del valor actual.
+ */
+function calcularProyeccion(res, d) {
+  if (d.v3 && (!d.v3.inRange || d.v3.cerrada)) return null;   // fuera de rango no genera fees
+  const dias = diasExactos(d);
+  if (!(dias > 0 && res.fees > 0 && res.valorPool > 0)) return null;
+  const porDia = res.fees / dias;
+  const sem = porDia * 7, mes = porDia * 30.4375;
+  return { dias, porDia, sem, mes, semPct: sem / res.valorPool * 100, mesPct: mes / res.valorPool * 100 };
+}
+
+/** Cantidad de cada token y su valor en USD */
+function composicion(d, res) {
+  const qa = res?.qa1 ?? d.qa1, qb = res?.qb1 ?? d.qb1;
+  if (!isFinite(qa) || !isFinite(qb) || !(d.pa1 > 0)) return null;
+  return [
+    { sym: d.tokenA, q: qa, usd: qa * d.pa1 },
+    { sym: d.tokenB, q: qb, usd: qb * (d.pb1 || 0) }
+  ];
+}
+// Versiones "envueltas" o puenteadas que se agrupan con su token base en el resumen
+const TOKEN_BASE = { WETH: 'ETH', WBTC: 'BTC', CBBTC: 'BTC', 'USDC.E': 'USDC', USDBC: 'USDC', 'USD₮0': 'USDT', USDT0: 'USDT' };
+const fmtCant = q => fmt(q, q >= 1000 ? 2 : q >= 1 ? 4 : 6);
+const fmtSigno = (n, f) => (n >= 0 ? '+' : '') + f(n);
+const composicionHtml = comp => comp.map(t =>
+  `<div class="comp-row"><span class="comp-q">${fmtCant(t.q)} ${escHtml(t.sym)}</span><span class="comp-usd">≈ ${fmtUSD(t.usd)}</span></div>`).join('');
+
 /**
  * Posición Uniswap V3 (liquidez concentrada): las cantidades salen de la
  * liquidez y el rango, no de x·y=k. Con el precio leído de la blockchain se
@@ -323,9 +361,9 @@ function renderResultados(res, d) {
     if (cls) el.className = 'metric-value ' + cls;
   };
   setV('rInicial', fmtUSD(res.valorInicial), 'neutral');
-  $('rInicialComp').textContent = `${fmtNum(d.qa0)} ${d.tokenA} + ${fmtNum(d.qb0)} ${d.tokenB}`;
+  $('rInicialComp').textContent = `${fmtCant(d.qa0)} ${d.tokenA} + ${fmtCant(d.qb0)} ${d.tokenB}`;
   setV('rPool', fmtUSD(res.valorPool), res.valorPool >= res.valorInicial ? 'positive' : 'neutral');
-  $('rPoolComp').textContent = `${fmtNum(res.qa1)} ${d.tokenA} + ${fmtNum(res.qb1)} ${d.tokenB}`;
+  $('rPoolComp').innerHTML = composicionHtml(composicion(d, res));
   setV('rHODL', fmtUSD(res.valorHODL), 'neutral');
   setV('rFees', fmtUSD(res.fees), 'positive');
   $('rFeesNote').textContent = res.feesVsIL >= 0 ? '✓ Fees cubren el IL' : `IL pendiente: ${fmtUSD(Math.abs(res.feesVsIL))}`;
@@ -343,8 +381,12 @@ function renderResultados(res, d) {
 
   setV('rROI', fmtPct(res.roi), colorClass(res.roi));
   $('rDias').textContent = res.dias > 0 ? `${res.dias} días en el pool` : 'Menos de 1 día';
-  setV('rROIMensual', fmtPct(res.roiMensual) + '/mes', colorClass(res.roiMensual));
-  $('rROIAnual').textContent = `${fmtPct(res.roiAnual)} APR estimado`;
+  const proy = calcularProyeccion(res, d);
+  const sinProy = d.v3 && !d.v3.inRange ? 'Fuera de rango: no genera fees' : 'Sin fees aún';
+  setV('rProySem', proy ? fmtSigno(proy.semPct, fmtPct) : '—', proy ? 'positive' : 'neutral');
+  $('rProySemUsd').textContent = proy ? `${fmtSigno(proy.sem, fmtUSD)} por semana` : sinProy;
+  setV('rProyMes', proy ? fmtSigno(proy.mesPct, fmtPct) : '—', proy ? 'positive' : 'neutral');
+  $('rProyMesUsd').textContent = proy ? `${fmtSigno(proy.mes, fmtUSD)} por mes · ${fmtPct(proy.mesPct * 12)} APR` : sinProy;
 
   // Desglose
   const rows = [
@@ -367,7 +409,9 @@ function renderResultados(res, d) {
       colorClass(res.pnlVsHODL)],
     ['sep'],
     ['Días en el pool', `${res.dias} días`, '', ''],
-    ['ROI mensualizado', fmtPct(res.roiMensual) + '/mes', fmtPct(res.roiAnual) + ' APR', colorClass(res.roiMensual)],
+    ['Fees por día', proy ? fmtUSD(proy.porDia) : '—', proy ? `Promedio de ${fmt(proy.dias, proy.dias < 2 ? 1 : 0)} días` : '', 'positive'],
+    ['Proyección semanal', proy ? fmtSigno(proy.sem, fmtUSD) : '—', proy ? fmtPct(proy.semPct) + ' del valor actual' : '', 'positive'],
+    ['Proyección mensual', proy ? fmtSigno(proy.mes, fmtUSD) : '—', proy ? fmtPct(proy.mesPct) + ' · si el ritmo de fees se mantiene' : '', 'positive'],
   ];
 
   $('breakdownBody').innerHTML = rows.map(r => {
@@ -738,28 +782,47 @@ function renderDashboard() {
   $('dashEmpty').classList.add('hidden');
 
   // Portfolio aggregate
-  let totalInv = 0, totalVal = 0, totalPnL = 0, totalFees = 0;
-  let roiSum = 0, roiN = 0;
+  let totalInv = 0, totalVal = 0, totalPnL = 0, totalFees = 0, totalSem = 0, totalMes = 0;
+  let roiN = 0;
   let tieneMetricas = false;
+  const tokens = {};   // composición agregada por token
 
   state.pools.forEach(pool => {
     const res = tryCalc(pool.data);
+    (composicion(pool.data, res) || []).forEach(t => {
+      const k = TOKEN_BASE[t.sym.toUpperCase()] || t.sym.toUpperCase();
+      tokens[k] ||= { sym: k, q: 0, usd: 0 };
+      tokens[k].q += t.q; tokens[k].usd += t.usd;
+    });
     if (!res) return;
     totalInv  += res.valorInicial;
     totalVal  += res.valorPool;
     totalPnL  += res.pnl;
     totalFees += res.fees;
-    roiSum    += res.roi;
+    const proy = calcularProyeccion(res, pool.data);
+    if (proy) { totalSem += proy.sem; totalMes += proy.mes; }
     roiN++;
     tieneMetricas = true;
   });
+
+  const comp = Object.values(tokens).filter(t => t.usd > 0.005).sort((a, b) => b.usd - a.usd);
+  $('dashComposicion').classList.toggle('hidden', !comp.length);
+  $('dashComposicion').innerHTML = comp.length ? `
+    <span class="pf-comp-title">Tus tokens en pools</span>
+    ${comp.map(t => `<span class="pf-comp-chip"><strong>${fmtCant(t.q)} ${escHtml(t.sym)}</strong> ≈ ${fmtUSD(t.usd)}</span>`).join('')}` : '';
 
   if (tieneMetricas) {
     $('dashSummary').classList.remove('hidden');
     $('pfInvertido').textContent = fmtUSD(totalInv);
     $('pfValor').textContent     = fmtUSD(totalVal);
     $('pfFees').textContent      = fmtUSD(totalFees);
-    $('pfROI').textContent       = fmtPct(roiN > 0 ? roiSum / roiN : 0);
+    const roiActual = totalInv > 0 ? totalPnL / totalInv * 100 : 0;
+    $('pfROI').textContent = fmtSigno(roiActual, fmtPct);
+    $('pfROI').className   = 'ps-value ' + colorClass(roiActual);
+    $('pfSem').textContent = totalSem > 0 ? fmtSigno(totalSem / totalVal * 100, fmtPct) : '—';
+    $('pfSemUsd').textContent = totalSem > 0 ? fmtSigno(totalSem, fmtUSD) : '';
+    $('pfMes').textContent = totalMes > 0 ? fmtSigno(totalMes / totalVal * 100, fmtPct) : '—';
+    $('pfMesUsd').textContent = totalMes > 0 ? fmtSigno(totalMes, fmtUSD) : '';
 
     const pnlEl = $('pfPnL');
     pnlEl.textContent = (totalPnL >= 0 ? '+' : '') + fmtUSD(totalPnL);
@@ -794,6 +857,7 @@ function renderPoolCards() {
     if (res) {
       const { score, factores } = calcularHealthScore(res);
       const senal = calcularSenal(score);
+      const proy = calcularProyeccion(res, d);
       const scoreColor = score >= 75 ? 'var(--positive)' : score >= 50 ? 'var(--warning)' : score >= 25 ? 'var(--caution)' : 'var(--negative)';
 
       senalBadge = `<span class="pc-signal">${senal.emoji} ${senal.nombre}</span>`;
@@ -804,8 +868,8 @@ function renderPoolCards() {
             <span class="pcm-value ${colorClass(res.pnl)}">${res.pnl >= 0 ? '+' : ''}${fmtUSD(res.pnl)}</span>
           </div>
           <div class="pcm-item">
-            <span class="pcm-label">ROI</span>
-            <span class="pcm-value ${colorClass(res.roi)}">${fmtPct(res.roi)}</span>
+            <span class="pcm-label">ROI actual</span>
+            <span class="pcm-value ${colorClass(res.roi)}">${fmtSigno(res.roi, fmtPct)}</span>
           </div>
           <div class="pcm-item">
             <span class="pcm-label">IL</span>
@@ -814,6 +878,16 @@ function renderPoolCards() {
           <div class="pcm-item">
             <span class="pcm-label">Fees</span>
             <span class="pcm-value positive">${fmtUSD(res.fees)}</span>
+          </div>
+          <div class="pcm-item">
+            <span class="pcm-label">Proy. semana</span>
+            <span class="pcm-value ${proy ? 'positive' : 'neutral'}">${proy ? fmtSigno(proy.semPct, fmtPct) : '—'}</span>
+            ${proy ? `<span class="pcm-sub">${fmtSigno(proy.sem, fmtUSD)}</span>` : ''}
+          </div>
+          <div class="pcm-item">
+            <span class="pcm-label">Proy. mes</span>
+            <span class="pcm-value ${proy ? 'positive' : 'neutral'}">${proy ? fmtSigno(proy.mesPct, fmtPct) : '—'}</span>
+            ${proy ? `<span class="pcm-sub">${fmtSigno(proy.mes, fmtUSD)}</span>` : ''}
           </div>
         </div>`;
       scoreBarHtml = `
@@ -835,6 +909,7 @@ function renderPoolCards() {
           </div>
           ${senalBadge}
         </div>
+        ${(() => { const c = composicion(d, res); return c ? `<div class="pc-comp">${composicionHtml(c)}</div>` : ''; })()}
         ${metricsHtml}
         ${scoreBarHtml}
         <div class="pc-footer">
@@ -1012,7 +1087,7 @@ function dataDesdePosicion(pos, prev = {}) {
   const e = tienePrev
     ? { qa0: prev.qa0, qb0: prev.qb0, pa0: prev.pa0, pb0: prev.pb0, fechaEntrada: prev.fechaEntrada,
         feesCobradasA: prev.v3?.feesCobradasA || 0, feesCobradasB: prev.v3?.feesCobradasB || 0,
-        fuente: prev.v3?.fuenteEntrada || 'manual' }
+        ts: prev.v3?.entradaTs || null, fuente: prev.v3?.fuenteEntrada || 'manual' }
     : (pos.entrada || {});
   const fees = (e.feesCobradasA || 0) * pos.pa1 + (e.feesCobradasB || 0) * pos.pb1 + pos.feesPendientesUSD;
 
@@ -1031,6 +1106,7 @@ function dataDesdePosicion(pos, prev = {}) {
       feesPendientesUSD: pos.feesPendientesUSD,
       feesCobradasA: e.feesCobradasA || 0, feesCobradasB: e.feesCobradasB || 0,
       fuenteEntrada: e.fuente || null,
+      entradaTs: e.ts || null,
       actualizado: pos.actualizado,
       ultimoRegistro: prev.v3?.ultimoRegistro || null
     }

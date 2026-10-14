@@ -185,14 +185,28 @@
           <span class="ps-value positive" id="pfFees">—</span>
         </div>
         <div class="ps-stat">
-          <span class="ps-label">ROI promedio</span>
+          <span class="ps-label">ROI actual</span>
           <span class="ps-value" id="pfROI">—</span>
+        </div>
+        <div class="ps-stat">
+          <span class="ps-label">Proy. semana</span>
+          <span class="ps-value positive" id="pfSem">—</span>
+          <span class="ps-sub" id="pfSemUsd"></span>
+        </div>
+        <div class="ps-stat">
+          <span class="ps-label">Proy. mes</span>
+          <span class="ps-value positive" id="pfMes">—</span>
+          <span class="ps-sub" id="pfMesUsd"></span>
         </div>
         <div class="ps-stat">
           <span class="ps-label">Pools activas</span>
           <span class="ps-value neutral" id="pfCount">—</span>
         </div>
       </div>
+
+      <!-- Tokens en pools -->
+      <div id="dashComposicion" class="pf-comp hidden"></div>
+      <p class="pf-nota">Proyecciones según los fees generados por día, con el precio actual. No incluyen cambios de precio.</p>
 
       <!-- Grid de cards -->
       <div id="poolCardsGrid" class="pool-cards-grid hidden"></div>
@@ -390,9 +404,11 @@
             <div class="metric-detail" id="rDias">0 días en el pool</div>
           </div>
           <div class="metric-card">
-            <div class="metric-label">ROI Mensualizado</div>
-            <div class="metric-value neutral" id="rROIMensual">0.00%/mes</div>
-            <div class="metric-detail" id="rROIAnual">0.00% APR</div>
+            <div class="metric-label">Proyección (fees)</div>
+            <div class="proy-pair">
+              <div><span class="proy-k">Semana</span><span class="metric-value neutral" id="rProySem">—</span><span class="metric-detail" id="rProySemUsd"></span></div>
+              <div><span class="proy-k">Mes</span><span class="metric-value neutral" id="rProyMes">—</span><span class="metric-detail" id="rProyMesUsd"></span></div>
+            </div>
           </div>
         </div>
 

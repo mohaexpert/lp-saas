@@ -286,7 +286,7 @@ const OnChain = (() => {
         const r = (x, n) => +(+x).toPrecision(n);
         entrada = { qa0: r(Math.max(0, qa0), 8), qb0: r(Math.max(0, qb0), 8), pa0: r(pa0, 6), pb0: r(pb0, 6),
                     feesCobradasA: fcA, feesCobradasB: fcB,
-                    fechaEntrada: new Date(h.timestamp * 1000).toISOString().slice(0, 10), fuente: 'thegraph' };
+                    fechaEntrada: new Date(h.timestamp * 1000).toISOString().slice(0, 10), ts: h.timestamp, fuente: 'thegraph' };
       }
 
       return {
