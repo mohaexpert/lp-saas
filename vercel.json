@@ -1,24 +1,38 @@
 {
   "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
+    }
   ],
+  "crons": [
+    {
+      "path": "/api/snapshot",
+      "schedule": "0 12 * * *"
+    }
+  ],
+  "functions": {
+    "api/snapshot.js": {
+      "maxDuration": 60
+    }
+  },
   "headers": [
     {
       "source": "/supabaseClient.js",
       "headers": [
-        { "key": "Cache-Control", "value": "no-store" }
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        }
       ]
     },
     {
-      "source": "/(.*)\\.js",
+      "source": "/(.*)\\.(js|css)",
       "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=3600" }
-      ]
-    },
-    {
-      "source": "/(.*)\\.css",
-      "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=3600" }
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, must-revalidate"
+        }
       ]
     }
   ]

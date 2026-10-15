@@ -29,6 +29,8 @@ const ONCHAIN_CHAINS = {
     // Este subgraph no tiene datos diarios ni fees en USD: se usa el volumen
     // acumulado en tokens (ahora vs hace 7 días) × la comisión de la pool
     feesPorVolumen: true, segPorBloque: 0.25,
+    // Versión nueva del subgraph: collectedFees ya viene sin el capital retirado
+    feesNetos: true,
     explorer: 'https://arbiscan.io'
   },
   base: {
@@ -182,12 +184,17 @@ const OnChain = (() => {
     const out = {};
     (j.data?.positions || []).forEach(p => {
       const n = k => parseFloat(p[k]) || 0;
-      // "collectedFees" ya excluye el capital retirado (verificado en las 3 redes)
+      // Subgraph nuevo (Arbitrum): collectedFees ya es solo fees.
+      // Subgraph antiguo (Ethereum, Base): collectedFees incluye el capital
+      // retirado, y el del token1 tiene un error conocido que copia el valor
+      // del token0; en ese caso el token1 se toma como desconocido (0).
+      const netos = ONCHAIN_CHAINS[chain].feesNetos;
+      const copiado = p.collectedFeesToken1 === p.collectedFeesToken0 && n('collectedFeesToken0') > 0;
       out[p.id] = {
         dep0: n('depositedToken0'), dep1: n('depositedToken1'),
         ret0: n('withdrawnToken0'), ret1: n('withdrawnToken1'),
-        fee0: n('collectedFeesToken0'),
-        fee1: n('collectedFeesToken1'),
+        fee0: netos ? n('collectedFeesToken0') : Math.max(0, n('collectedFeesToken0') - n('withdrawnToken0')),
+        fee1: netos ? n('collectedFeesToken1') : copiado ? 0 : Math.max(0, n('collectedFeesToken1') - n('withdrawnToken1')),
         timestamp: Number(p.transaction?.timestamp) || null
       };
     });
