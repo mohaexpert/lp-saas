@@ -105,17 +105,31 @@ function diasExactos(d) {
   return Math.max((Date.now() - ini) / 86_400_000, 1 / 24);
 }
 
+const DIAS_PARA_REAL = 3;   // desde aquí se muestra el ritmo real al lado del estimado
+
 /**
- * Proyección según el ritmo de fees (precio constante): lo que la pool
- * genera por día, llevado a semana y mes, en USD y % del valor actual.
+ * Proyección de fees con precio constante, llevada a semana y mes.
+ * · Estimado (pools on-chain): fees diarios de la pool (prom. 7 días) ×
+ *   participación de la posición en la liquidez activa. Sirve desde el minuto 1.
+ * · Real: fees ganados ÷ días transcurridos. Se usa si no hay estimado
+ *   (pools manuales) y se compara con el estimado tras DIAS_PARA_REAL días.
  */
 function calcularProyeccion(res, d) {
+  if (!(res.valorPool > 0)) return null;
   if (d.v3 && (!d.v3.inRange || d.v3.cerrada)) return null;   // fuera de rango no genera fees
   const dias = diasExactos(d);
-  if (!(dias > 0 && res.fees > 0 && res.valorPool > 0)) return null;
-  const porDia = res.fees / dias;
+  const porDiaReal = dias > 0 && res.fees > 0 ? res.fees / dias : null;
+  const porDiaEst  = d.v3?.feesDiaEstimado > 0 ? d.v3.feesDiaEstimado : null;
+  const porDia = porDiaEst ?? porDiaReal;
+  if (!porDia) return null;
   const sem = porDia * 7, mes = porDia * 30.4375;
-  return { dias, porDia, sem, mes, semPct: sem / res.valorPool * 100, mesPct: mes / res.valorPool * 100 };
+  return {
+    dias, porDia, sem, mes,
+    semPct: sem / res.valorPool * 100, mesPct: mes / res.valorPool * 100,
+    fuente: porDiaEst ? 'estimado' : 'real',
+    porDiaEst, porDiaReal,
+    comparar: porDiaEst && porDiaReal && dias >= DIAS_PARA_REAL
+  };
 }
 
 /** Cantidad de cada token y su valor en USD */
@@ -384,7 +398,7 @@ function renderResultados(res, d) {
   const proy = calcularProyeccion(res, d);
   const sinProy = d.v3 && !d.v3.inRange ? 'Fuera de rango: no genera fees' : 'Sin fees aún';
   setV('rProySem', proy ? fmtSigno(proy.semPct, fmtPct) : '—', proy ? 'positive' : 'neutral');
-  $('rProySemUsd').textContent = proy ? `${fmtSigno(proy.sem, fmtUSD)} por semana` : sinProy;
+  $('rProySemUsd').textContent = proy ? `${fmtSigno(proy.sem, fmtUSD)} por semana · ${proy.fuente === 'estimado' ? 'estimado según la pool' : 'según tus fees'}` : sinProy;
   setV('rProyMes', proy ? fmtSigno(proy.mesPct, fmtPct) : '—', proy ? 'positive' : 'neutral');
   $('rProyMesUsd').textContent = proy ? `${fmtSigno(proy.mes, fmtUSD)} por mes · ${fmtPct(proy.mesPct * 12)} APR` : sinProy;
 
@@ -409,9 +423,17 @@ function renderResultados(res, d) {
       colorClass(res.pnlVsHODL)],
     ['sep'],
     ['Días en el pool', `${res.dias} días`, '', ''],
-    ['Fees por día', proy ? fmtUSD(proy.porDia) : '—', proy ? `Promedio de ${fmt(proy.dias, proy.dias < 2 ? 1 : 0)} días` : '', 'positive'],
+    ...(d.v3?.feesPoolDia > 0 ? [
+      ['Fees diarios de la pool', fmtUSD(d.v3.feesPoolDia), 'Promedio de los últimos 7 días', ''],
+      ['Tu participación', d.v3.participacion > 0 ? fmtNum(d.v3.participacion * 100, 4) + '%' : '0%',
+        d.v3.participacion > 0 ? 'De la liquidez activa en el precio actual' : 'Fuera de rango: no recibes fees', ''],
+    ] : []),
+    ['Fees por día (estimado)', proy?.porDiaEst ? fmtUSD(proy.porDiaEst) : '—',
+      proy?.porDiaEst ? 'Fees de la pool × tu participación' : 'Requiere datos de la pool', 'positive'],
+    ['Fees por día (real)', proy?.porDiaReal ? fmtUSD(proy.porDiaReal) : '—',
+      proy?.porDiaReal ? `Lo ganado en ${fmt(proy.dias, proy.dias < 2 ? 1 : 0)} días` + (proy.comparar ? ` · ${fmt(proy.porDiaReal / proy.porDiaEst * 100, 0)}% del estimado` : proy.porDiaEst ? ' · poco historial aún' : '') : '', 'positive'],
     ['Proyección semanal', proy ? fmtSigno(proy.sem, fmtUSD) : '—', proy ? fmtPct(proy.semPct) + ' del valor actual' : '', 'positive'],
-    ['Proyección mensual', proy ? fmtSigno(proy.mes, fmtUSD) : '—', proy ? fmtPct(proy.mesPct) + ' · si el ritmo de fees se mantiene' : '', 'positive'],
+    ['Proyección mensual', proy ? fmtSigno(proy.mes, fmtUSD) : '—', proy ? fmtPct(proy.mesPct) + ' · si el precio sigue en rango' : '', 'positive'],
   ];
 
   $('breakdownBody').innerHTML = rows.map(r => {
@@ -887,7 +909,7 @@ function renderPoolCards() {
           <div class="pcm-item">
             <span class="pcm-label">Proy. mes</span>
             <span class="pcm-value ${proy ? 'positive' : 'neutral'}">${proy ? fmtSigno(proy.mesPct, fmtPct) : '—'}</span>
-            ${proy ? `<span class="pcm-sub">${fmtSigno(proy.mes, fmtUSD)}</span>` : ''}
+            ${proy ? `<span class="pcm-sub">${fmtSigno(proy.mes, fmtUSD)}${proy.fuente === 'estimado' ? ' · est.' : ''}</span>` : ''}
           </div>
         </div>`;
       scoreBarHtml = `
@@ -1104,6 +1126,7 @@ function dataDesdePosicion(pos, prev = {}) {
       inRange: pos.inRange, cerrada: pos.cerrada, rangoMin: pos.rangoMin, rangoMax: pos.rangoMax,
       precioActualAenB: pos.precioActualAenB, pa1Live: pos.pa1, pb1Live: pos.pb1,
       feesPendientesUSD: pos.feesPendientesUSD,
+      participacion: pos.participacion, feesPoolDia: pos.feesPoolDia, feesDiaEstimado: pos.feesDiaEstimado,
       feesCobradasA: e.feesCobradasA || 0, feesCobradasB: e.feesCobradasB || 0,
       fuenteEntrada: e.fuente || null,
       entradaTs: e.ts || null,

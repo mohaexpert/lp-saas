@@ -26,6 +26,9 @@ const ONCHAIN_CHAINS = {
     npm: '0xC36442b4a4522E871399CD717aBDD847Ab11FE88',
     factory: '0x1F98431c8aD98523631AE4a59f267346ea31F984',
     subgraph: 'HyW7A86UEdYVt5b9Lrw8W2F98yKecerHKutZTRbSCX27',
+    // Este subgraph no tiene datos diarios ni fees en USD: se usa el volumen
+    // acumulado en tokens (ahora vs hace 7 días) × la comisión de la pool
+    feesPorVolumen: true, segPorBloque: 0.25,
     explorer: 'https://arbiscan.io'
   },
   base: {
@@ -50,6 +53,7 @@ const OnChain = (() => {
     positions:           '0x99fbab88',
     getPool:             '0x1698ee82',
     slot0:               '0x3850c7bd',
+    liquidity:           '0x1a686502',
     symbol:              '0x95d89b41',
     decimals:            '0x313ce567',
     collect:             '0xfc6f7865'
@@ -190,6 +194,83 @@ const OnChain = (() => {
     return out;
   }
 
+  // ── Actividad de la pool (The Graph) ────────────────────────────
+  /**
+   * Fees diarios de cada pool: promedio de los últimos 7 días completos
+   * (se excluye el día en curso, que va incompleto). Caché de 1 h para
+   * no gastar consultas en cada actualización automática.
+   */
+  const actividadCache = new Map();
+  const ACTIVIDAD_TTL = 3600_000;
+  async function graphQuery(chain, query) {
+    const r = await fetch(`https://gateway.thegraph.com/api/${graphKey()}/subgraphs/id/${ONCHAIN_CHAINS[chain].subgraph}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query })
+    });
+    const j = await r.json().catch(() => ({}));
+    if (j.errors?.length) throw new Error('The Graph: ' + j.errors[0].message);
+    return j.data || {};
+  }
+  const lista = ids => ids.map(a => `"${a}"`).join(',');
+
+  /** Ethereum / Base: fees diarios en USD que ya calcula el subgraph */
+  async function actividadPorDias(chain, faltan, ahora) {
+    const d = await graphQuery(chain, `{ pools(where: { id_in: [${lista(faltan)}] }) {
+      id poolDayData(first: 8, orderBy: date, orderDirection: desc) { date feesUSD } } }`);
+    const hoyUTC = Math.floor(ahora / 86_400_000) * 86_400;
+    (d.pools || []).forEach(p => {
+      const dias = (p.poolDayData || []).filter(x => x.date < hoyUTC).slice(0, 7);
+      const total = dias.reduce((s, x) => s + (parseFloat(x.feesUSD) || 0), 0);
+      actividadCache.set(chain + ':' + p.id, { ts: ahora, feesDia: dias.length ? total / dias.length : null });
+    });
+  }
+
+  /** Arbitrum: volumen acumulado en tokens, ahora vs hace ~7 días */
+  async function actividadPorVolumen(chain, faltan, ahora) {
+    const C = ONCHAIN_CHAINS[chain];
+    const campos = 'id feeTier volumeToken0 volumeToken1';
+    const hoy = await graphQuery(chain, `{ _meta { block { number } } pools(where: { id_in: [${lista(faltan)}] }) { ${campos} } }`);
+    const bloqueHoy = hoy._meta.block.number;
+    const bloqueAntes = Math.max(1, bloqueHoy - Math.round(7 * 86400 / C.segPorBloque));
+    const [antes, bloques] = await Promise.all([
+      graphQuery(chain, `{ pools(block: { number: ${bloqueAntes} }, where: { id_in: [${lista(faltan)}] }) { ${campos} } }`),
+      rpcBatch(chain, [bloqueHoy, bloqueAntes].map(n =>
+        ({ method: 'eth_getBlockByNumber', params: ['0x' + n.toString(16), false] })))
+    ]);
+    const segundos = parseInt(bloques[0]?.timestamp, 16) - parseInt(bloques[1]?.timestamp, 16);
+    if (!(segundos > 3600)) return;
+    const previo = new Map((antes.pools || []).map(p => [p.id, p]));
+    (hoy.pools || []).forEach(p => {
+      const a = previo.get(p.id);
+      if (!a) return;
+      // Se guardan los volúmenes por día en tokens; el paso a USD se hace con los precios actuales
+      actividadCache.set(chain + ':' + p.id, {
+        ts: ahora, comision: Number(p.feeTier) / 1e6,
+        vol0Dia: (parseFloat(p.volumeToken0) - parseFloat(a.volumeToken0)) / segundos * 86400,
+        vol1Dia: (parseFloat(p.volumeToken1) - parseFloat(a.volumeToken1)) / segundos * 86400
+      });
+    });
+  }
+
+  async function actividadPools(chain, direcciones) {
+    const unicas = [...new Set(direcciones.filter(Boolean))];
+    const ahora = Date.now();
+    const faltan = unicas.filter(a => !(actividadCache.get(chain + ':' + a)?.ts > ahora - ACTIVIDAD_TTL));
+    if (graphKey() && faltan.length) {
+      await (ONCHAIN_CHAINS[chain].feesPorVolumen ? actividadPorVolumen : actividadPorDias)(chain, faltan, ahora);
+    }
+    const out = {};
+    unicas.forEach(a => { const v = actividadCache.get(chain + ':' + a); if (v) out[a] = v; });
+    return out;
+  }
+
+  /** Fees diarios de la pool en USD (por volumen: promedio de las dos patas del swap × comisión) */
+  function feesDiaUSD(act, px0, px1) {
+    if (!act) return null;
+    if (act.feesDia != null) return act.feesDia;
+    if (act.vol0Dia == null || !(px0 > 0 && px1 > 0)) return null;
+    return (act.vol0Dia * px0 + act.vol1Dia * px1) / 2 * act.comision;
+  }
+
   // ── Lectura de posiciones ───────────────────────────────────────
   async function idsDeWallet(chain, owner) {
     const C = ONCHAIN_CHAINS[chain];
@@ -222,8 +303,9 @@ const OnChain = (() => {
     // Pools, slot0, fees sin cobrar y metadatos de tokens
     const pools = await rpcBatch(chain, pos.map(p => ethCall(C.factory, SEL.getPool + addr(p.token0) + addr(p.token1) + pad(p.fee))));
     pos.forEach((p, i) => { p.pool = pools[i] ? toAddr(words(pools[i])[0]) : null; });
-    const [slots, fees, tok] = await Promise.all([
+    const [slots, liqPools, fees, tok] = await Promise.all([
       rpcBatch(chain, pos.map(p => ethCall(p.pool, SEL.slot0))),
+      rpcBatch(chain, pos.map(p => ethCall(p.pool, SEL.liquidity))),
       rpcBatch(chain, pos.map(p => ethCall(C.npm, SEL.collect + pad(p.id) + addr(owner) + pad(MAX_U128) + pad(MAX_U128), owner))),
       cargarTokens(chain, pos.flatMap(p => [p.token0, p.token1]))
     ]);
@@ -233,6 +315,8 @@ const OnChain = (() => {
     let hist = {};
     let errorHistorial = null;
     try { hist = await historial(chain, sinEntrada); } catch (e) { errorHistorial = e.message; }
+    let actividad = {};
+    try { actividad = await actividadPools(chain, pos.map(p => p.pool)); } catch (e) { console.warn(e); }
 
     // Precios actuales e históricos
     const claves = pos.flatMap(p => [`${chain}:${p.token0}`, `${chain}:${p.token1}`]);
@@ -274,6 +358,13 @@ const OnChain = (() => {
       const [rangoMin, rangoMax] = aIsToken0 ? [pl, pu] : [1 / pu, 1 / pl];
       const precioActualAenB = aIsToken0 ? p0en1 : 1 / p0en1;
 
+      // Estimado de fees: fees diarios de la pool × participación en la liquidez activa.
+      // Solo cobra fees la liquidez dentro de rango, así que fuera de rango es 0.
+      const liqPool = words(liqPools[i])[0] || 0n;
+      const participacion = inRange && liqPool > 0n ? Number(p.liquidity) / Number(liqPool) : 0;
+      const feesPoolDia = feesDiaUSD(actividad[p.pool], px0, px1);
+      const feesDiaEstimado = feesPoolDia == null ? null : feesPoolDia * participacion;
+
       // Entrada: guardada > The Graph > vacía (se completa a mano)
       let entrada = entradas[p.id] || null;
       const h = hist[p.id];
@@ -298,6 +389,7 @@ const OnChain = (() => {
         qa1, qb1, pa1, pb1,
         feesPendientesA: fA, feesPendientesB: fB,
         feesPendientesUSD: fA * pa1 + fB * pb1,
+        liqPool: liqPool.toString(), participacion, feesPoolDia, feesDiaEstimado,
         valorUSD: qa1 * pa1 + qb1 * pb1,
         entrada, errorHistorial,
         actualizado: new Date().toISOString()
